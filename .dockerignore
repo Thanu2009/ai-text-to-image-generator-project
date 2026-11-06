@@ -1,0 +1,48 @@
+# Git & Version Control
+.git
+.gitignore
+
+# Python Bytecode & Environments
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Local Environment Variables (secrets should not be baked into the image)
+.env
+.env.local
+
+# IDE & Editor Configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test & Coverage Artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local static generated files (persisted via Docker volumes)
+static/generated/*.png
+static/generated/*.jpg
+static/generated/*.jpeg
+
+
+# Exclude exported archives
+*.tar
+*.zip
+
+# Exclude unnecessary files
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/

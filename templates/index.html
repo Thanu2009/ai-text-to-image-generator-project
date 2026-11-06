@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Text-to-Image Generator | BCA Major Project</title>
+  <meta name="description" content="Production-ready AI text-to-image generator using PyTorch, Hugging Face Diffusers, and Flask inside Docker.">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Ambient background glow elements -->
+  <div class="ambient-glow glow-1"></div>
+  <div class="ambient-glow glow-2"></div>
+  <div class="ambient-glow glow-3"></div>
+
+  <div class="app-container">
+    <!-- Header Section -->
+    <header class="app-header">
+      <div class="badge-row">
+        <span class="pill-badge mode-badge" id="demoModeBadge">
+    🖼️ Demo Preview Mode
+</span>
+        <span class="pill-badge tech-badge">
+          <span class="status-dot green"></span>
+          Docker Containerized
+        </span>
+        <span class="pill-badge academic-badge">
+          🎓 BCA Final Year Major Project
+        </span>
+        <span class="pill-badge mode-badge" id="backendModeBadge">
+          ⚡ Mode: {{ status.configured_mode|upper }}
+        </span>
+      </div>
+
+      <h1 class="project-title">
+        AI Text-to-Image <span class="gradient-text">Generator</span>
+      </h1>
+      <p class="project-subtitle">
+    Explore creative image previews using text prompts. This project supports AI generation when the inference service is available, and Demo Preview mode for offline demonstrations.
+</p>
+
+      <!-- System Diagnostic Bar -->
+      <div class="status-bar-card">
+        <div class="status-item">
+          <span class="status-label">Active Model</span>
+          <span class="status-value mono" id="statusModel">{{ status.model_id }}</span>
+        </div>
+        <div class="status-divider"></div>
+        <div class="status-item">
+          <span class="status-label">Compute Device</span>
+          <span class="status-value mono" id="statusDevice">{{ status.device }}</span>
+        </div>
+        <div class="status-divider"></div>
+        <div class="status-item">
+          <span class="status-label">Inference Engine</span>
+          <span class="status-value" id="statusEngine">
+            {% if status.is_local_pipeline_loaded %}
+              Local Diffusers Pipeline
+            {% elif status.has_hf_token %}
+              Hugging Face Cloud API
+            {% else %}
+              Auto Selection
+            {% endif %}
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Generation Interface -->
+    <main class="main-layout">
+      <!-- Input Panel -->
+      <section class="glass-panel input-panel">
+        <div class="panel-header">
+          <label for="promptInput" class="panel-title">
+            <span class="panel-icon">✍️</span> Enter Your Image Description
+          </label>
+          <span class="char-counter" id="charCounter">0 / 500</span>
+        </div>
+
+        <div class="textarea-wrapper">
+          <textarea 
+            id="promptInput" 
+            placeholder="E.g., A futuristic cyberpunk detective walking through a neon-lit rain-slicked Tokyo alley, cinematic lighting, ultra-detailed 8k render..."
+            maxlength="500"
+            rows="4"
+          ></textarea>
+        </div>
+
+        <!-- Prompt Suggestions / Quick Chips -->
+        <div class="prompt-chips-section">
+          <span class="chips-title">💡 Try an artistic prompt:</span>
+          <div class="chips-group">
+            <button type="button" class="chip-btn" data-prompt="A majestic snow leopard resting on Himalayan mountain peaks during golden hour sunset, photorealistic 8k, national geographic style">
+              🏔️ Snow Leopard
+            </button>
+            <button type="button" class="chip-btn" data-prompt="A cozy steampunk library filled with glowing brass clockwork automata, floating books, warm volumetric sunlight">
+              ⚙️ Steampunk Library
+            </button>
+            <button type="button" class="chip-btn" data-prompt="An ancient crystalline temple hidden inside a bioluminescent alien jungle at midnight, hyperrealistic cinematic">
+              💎 Alien Temple
+            </button>
+            <button type="button" class="chip-btn" data-prompt="A retro-futuristic flying sports car racing through clouds above a city of gleaming spires, 1980s synthwave aesthetic">
+              🚗 Synthwave Flyer
+            </button>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-row">
+          <button type="button" id="clearBtn" class="btn btn-secondary">
+            Clear Prompt
+          </button>
+          <button type="button" id="generateBtn" class="btn btn-primary">
+            <span class="btn-icon">⚡</span>
+            <span class="btn-text">Generate Image</span>
+            <span class="btn-hint">(Ctrl + Enter)</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Dynamic Loading State -->
+      <section id="loadingSection" class="glass-panel loading-panel" style="display: none;">
+        <div class="spinner-container">
+          <div class="spinner-core"></div>
+          <div class="spinner-ring"></div>
+        </div>
+        <h3 class="loading-title">Preparing Image Preview...</h3>
+        <p class="loading-stage" id="loadingStageText">Tokenizing prompt embeddings with CLIP...</p>
+        <div class="timer-badge">
+          ⏱️ Elapsed Time: <span id="elapsedTime" class="mono">0.0s</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar-glow"></div>
+        </div>
+      </section>
+
+      <!-- Error Alert Card -->
+      <section id="errorSection" class="glass-panel error-panel" style="display: none;">
+        <div class="error-header">
+          <span class="error-icon">⚠️</span>
+          <div>
+            <h4 class="error-heading">AI Generation Failed</h4>
+            <span class="error-type-badge mono" id="errorType">Error</span>
+          </div>
+        </div>
+        <div class="error-body">
+          <p class="error-message" id="errorMessage"></p>
+          <p class="error-details" id="errorDetails"></p>
+        </div>
+      </section>
+
+      <!-- Successful Result Showcase Card -->
+      <section id="resultSection" class="glass-panel result-panel" style="display: none;">
+        <div class="result-header">
+          <h3 class="result-title">
+            <span class="result-icon">✨</span> Image Preview Output
+          </h3>
+          <a id="downloadBtn" href="#" download="generated_image.png" class="btn btn-download">
+            <span class="btn-icon">📥</span> Download Image (.png)
+          </a>
+        </div>
+
+        <!-- Real Generated Image Display -->
+        <div class="image-showcase-wrapper">
+          <img id="generatedImage" src="" alt="Demo Image Preview" class="generated-image">
+        </div>
+
+        <!-- Prompt Card -->
+        <div class="prompt-display-card">
+          <div class="prompt-card-header">
+            <span class="prompt-label">Submitted Prompt</span>
+            <button type="button" id="copyPromptBtn" class="btn-copy">
+              📋 Copy Prompt
+            </button>
+          </div>
+          <p id="submittedPromptText" class="prompt-content"></p>
+        </div>
+
+        <!-- Technical Generation Metadata Grid -->
+        <div class="metadata-grid">
+          <div class="metadata-card">
+            <span class="meta-label">Model Name</span>
+            <span class="meta-value mono" id="metaModel">-</span>
+          </div>
+          <div class="metadata-card">
+            <span class="meta-label">Resolution</span>
+            <span class="meta-value mono" id="metaDimensions">-</span>
+          </div>
+          <div class="metadata-card">
+            <span class="meta-label">Inference Time</span>
+            <span class="meta-value mono" id="metaDuration">-</span>
+          </div>
+          <div class="metadata-card">
+            <span class="meta-label">Execution Backend</span>
+            <span class="meta-value mono" id="metaBackend">-</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- BCA Viva Voce & Educational Explanation Section -->
+    <footer class="app-footer">
+      <details class="viva-details glass-panel">
+        <summary class="viva-summary">
+          <span class="viva-icon">📚</span>
+          <strong>How It Works — BCA Demonstration & Viva Voce Guide</strong>
+          <span class="viva-arrow">▼</span>
+        </summary>
+        <div class="viva-content">
+          <h4>1. What is a Latent Diffusion Model (LDM)?</h4>
+          <p>
+            Standard image generation operating directly on raw RGB pixels (\(1024 \times 1024 \times 3\)) requires massive GPU compute. 
+            Latent Diffusion Models solve this by utilizing a <strong>Variational Autoencoder (VAE)</strong> to compress the image into an 8x smaller 
+            latent tensor space (\(128 \times 128 \times 4\)), where diffusion and denoising happen efficiently.
+          </p>
+
+          <h4>2. Step-by-Step Generation Pipeline:</h4>
+          <ol>
+            <li><strong>Text Encoding (CLIP / T5):</strong> The user's prompt is tokenized and transformed into continuous vector embeddings that represent semantic meanings.</li>
+            <li><strong>Latent Noise Injection:</strong> A random tensor filled with Gaussian noise is generated in latent space.</li>
+            <li><strong>Cross-Attention Denoising (U-Net / DiT):</strong> Across multiple discrete time steps (e.g., 30 steps), the neural network iteratively estimates and subtracts noise, conditioned on the text embeddings.</li>
+            <li><strong>VAE Decoding:</strong> The final cleaned latent representation is decoded into full-resolution RGB pixels and saved as a PNG using Pillow.</li>
+          </ol>
+
+          <h4>3. Why Docker Containerization?</h4>
+          <p>
+            Docker isolates PyTorch, CUDA libraries, Python interpreters, and dependencies inside a reproducible container. 
+            This prevents OS version conflicts and ensures the exact same model pipeline executes smoothly on any development laptop, lab PC, or production cloud server.
+          </p>
+        </div>
+      </details>
+      <p class="copyright-note">
+        AI Text-to-Image Generator &copy; {{ current_year }} | BCA Major Project | Built with Flask, PyTorch & Docker
+      </p>
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
