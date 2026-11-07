@@ -1,54 +1,41 @@
+
 """
 AI Text-to-Image Generation Service.
-Implements real text-to-image AI pipeline using PyTorch, Hugging Face Diffusers,
-and Hugging Face Inference Client with Pillow image processing.
+Uses Cloudflare Workers AI with FLUX.1 schnell.
 
-Strictly prompt-driven: No mock data, no placeholder images, no simulated outputs.
+Strictly prompt-driven:
+No mock data, placeholder images, or simulated outputs.
 """
 
 import io
 import os
 import time
 import uuid
+import base64
 import logging
+
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+import requests
 from PIL import Image
+
 from config import Config, sanitize_secrets
 
+
 logger = logging.getLogger(__name__)
-
-# Check optional imports gracefully for inspection and initialization
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    torch = None
-    TORCH_AVAILABLE = False
-
-try:
-    import diffusers
-    from diffusers import AutoPipelineForText2Image, DiffusionPipeline
-    DIFFUSERS_AVAILABLE = True
-except ImportError:
-    diffusers = None
-    DIFFUSERS_AVAILABLE = False
-
-try:
-    from huggingface_hub import InferenceClient
-    HF_HUB_AVAILABLE = True
-except ImportError:
-    InferenceClient = None
-    HF_HUB_AVAILABLE = False
-
-import requests
 
 
 class ModelServiceError(Exception):
     """Custom exception containing structured diagnostic details."""
-    def __init__(self, message: str, error_type: str = "ModelServiceError", details: Optional[str] = None):
+
+    def __init__(
+        self,
+        message: str,
+        error_type: str = "ModelServiceError",
+        details: Optional[str] = None
+    ):
         super().__init__(message)
         self.message = message
         self.error_type = error_type
@@ -57,116 +44,72 @@ class ModelServiceError(Exception):
 
 class TextToImageModelService:
     """
-    Manages real text-to-image generation via Hugging Face Diffusers (local PyTorch pipeline)
-    or Hugging Face Inference API.
+    Generates real images using Cloudflare Workers AI.
+    Model: FLUX.1 schnell
     """
 
     def __init__(self):
-        self.mode = Config.GENERATION_MODE
-        self.model_id = Config.MODEL_ID
-        self.device = self._detect_device()
+
+        self.mode = os.getenv(
+            "GENERATION_MODE",
+            "cloudflare"
+        ).strip().lower()
+
+        self.cloudflare_account_id = os.getenv(
+            "CLOUDFLARE_ACCOUNT_ID", ""
+        ).strip()
+
+        self.cloudflare_api_token = os.getenv(
+            "CLOUDFLARE_API_TOKEN", ""
+        ).strip()
+
+        self.model_id = os.getenv(
+            "CLOUDFLARE_MODEL_ID",
+            "@cf/black-forest-labs/flux-1-schnell"
+        ).strip()
+
+        self.device = "Cloudflare Workers AI"
+
         self.local_pipeline = None
         self.is_pipeline_loaded = False
         self.pipeline_load_error = None
 
         logger.info(
-            f"Initializing TextToImageModelService [Mode: {self.mode}, "
-            f"Model: {self.model_id}, Device: {self.device}]"
+            f"Initializing image service "
+            f"[Mode: {self.mode}, Model: {self.model_id}]"
         )
 
-        # Preload local diffusers pipeline if explicitly configured
-        if self.mode == "diffusers":
-            self._load_local_pipeline()
-
-    def _detect_device(self) -> str:
-        """Detect available hardware accelerator for PyTorch."""
-        if TORCH_AVAILABLE and torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            return f"cuda ({gpu_name})"
-        return "cpu"
-
-    def _load_local_pipeline(self):
-        """
-        Loads the pretrained Diffusers pipeline into memory/GPU.
-        Raises an exception if dependencies or weights fail to load.
-        """
-        if not TORCH_AVAILABLE:
-            err = "PyTorch is not installed. Please install torch with: pip install torch"
-            self.pipeline_load_error = err
-            logger.error(err)
-            raise ModelServiceError(err, error_type="DependencyMissingError")
-
-        if not DIFFUSERS_AVAILABLE:
-            err = "Diffusers is not installed. Please install diffusers and transformers: pip install diffusers transformers"
-            self.pipeline_load_error = err
-            logger.error(err)
-            raise ModelServiceError(err, error_type="DependencyMissingError")
-
-        try:
-            logger.info(f"Loading local diffusers model '{self.model_id}' on {self.device}...")
-            
-            # Determine PyTorch dtype based on device
-            torch_dtype = torch.float16 if "cuda" in self.device else torch.float32
-
-            # Load the text-to-image pipeline
-            self.local_pipeline = AutoPipelineForText2Image.from_pretrained(
-                self.model_id,
-                torch_dtype=torch_dtype,
-                token=Config.HF_TOKEN if Config.HF_TOKEN else None,
-                safety_checker=None  # Can be adjusted based on requirements
-            )
-
-            # Move to device
-            if "cuda" in self.device:
-                self.local_pipeline.to("cuda")
-                # Optional memory optimization
-                if hasattr(self.local_pipeline, "enable_attention_slicing"):
-                    self.local_pipeline.enable_attention_slicing()
-
-            self.is_pipeline_loaded = True
-            self.pipeline_load_error = None
-            logger.info("Local Diffusers pipeline successfully loaded into memory.")
-
-        except Exception as exc:
-            sanitized_msg = sanitize_secrets(str(exc))
-            self.pipeline_load_error = sanitized_msg
-            logger.exception("Failed to load local diffusers pipeline.")
-            raise ModelServiceError(
-                f"Failed to load local Diffusers model '{self.model_id}': {sanitized_msg}",
-                error_type=exc.__class__.__name__,
-                details="Verify that the model ID exists on Hugging Face, dependencies are installed, and sufficient VRAM/RAM is available."
-            )
-
     def validate_prompt(self, prompt: Any) -> str:
-        """
-        Strict validation for user-provided prompts.
-        Ensures prompt is non-empty, contains valid characters, and is within bounds.
-        """
+        """Validate the user's image description."""
+
         if prompt is None:
             raise ModelServiceError(
-                "Prompt was not provided in the request.",
-                error_type="EmptyPromptError",
-                details="Please enter a descriptive text prompt to generate an image."
+                "Prompt was not provided.",
+                error_type="EmptyPromptError"
             )
 
         if not isinstance(prompt, str):
             raise ModelServiceError(
-                f"Invalid prompt type: expected string, received {type(prompt).__name__}.",
+                "Prompt must be a string.",
                 error_type="InvalidPromptTypeError"
             )
 
         trimmed_prompt = prompt.strip()
+
         if not trimmed_prompt:
             raise ModelServiceError(
-                "Prompt cannot be empty or only whitespace.",
-                error_type="EmptyPromptError",
-                details="Please enter words describing the scene, style, or subject you wish to generate."
+                "Prompt cannot be empty.",
+                error_type="EmptyPromptError"
             )
 
-        if len(trimmed_prompt) > Config.MAX_PROMPT_LENGTH:
+        max_length = min(
+            getattr(Config, "MAX_PROMPT_LENGTH", 2048),
+            2048
+        )
+
+        if len(trimmed_prompt) > max_length:
             raise ModelServiceError(
-                f"Prompt exceeds maximum allowed length of {Config.MAX_PROMPT_LENGTH} characters "
-                f"(current length: {len(trimmed_prompt)}).",
+                f"Prompt exceeds {max_length} characters.",
                 error_type="PromptLengthExceededError"
             )
 
@@ -174,77 +117,76 @@ class TextToImageModelService:
 
     def generate_image(self, prompt_text: str) -> Dict[str, Any]:
         """
-        Executes real AI text-to-image generation from the exact user prompt.
-        
-        Returns:
-            Dictionary containing image paths, execution timing, metadata, and prompt details.
-        
-        Raises:
-            ModelServiceError with actual underlying error details on failure.
+        Generate an image and save it in static/generated.
         """
-        # Strict prompt validation
+
         validated_prompt = self.validate_prompt(prompt_text)
 
-        start_time = time.time()
-        generated_pil_image: Optional[Image.Image] = None
-        execution_backend = ""
-
-        logger.info(f"Initiating real AI image generation for prompt: '{validated_prompt}'")
-
-        # Determine generation execution route
-        active_mode = self.mode
-
-        if active_mode == "diffusers":
-            generated_pil_image, execution_backend = self._generate_with_local_diffusers(validated_prompt)
-        elif active_mode == "hf_api":
-            generated_pil_image, execution_backend = self._generate_with_hf_api(validated_prompt)
-        elif active_mode == "auto":
-            # Auto mode: Use local diffusers if pipeline is loaded, otherwise use HF API
-            if self.is_pipeline_loaded and self.local_pipeline is not None:
-                generated_pil_image, execution_backend = self._generate_with_local_diffusers(validated_prompt)
-            elif Config.HF_TOKEN:
-                generated_pil_image, execution_backend = self._generate_with_hf_api(validated_prompt)
-            elif TORCH_AVAILABLE and DIFFUSERS_AVAILABLE:
-                # Try loading local pipeline on the fly
-                try:
-                    self._load_local_pipeline()
-                    generated_pil_image, execution_backend = self._generate_with_local_diffusers(validated_prompt)
-                except Exception:
-                    # Fallback to HF API attempt
-                    generated_pil_image, execution_backend = self._generate_with_hf_api(validated_prompt)
-            else:
-                generated_pil_image, execution_backend = self._generate_with_hf_api(validated_prompt)
-        else:
+        if self.mode != "cloudflare":
             raise ModelServiceError(
-                f"Unknown GENERATION_MODE: '{active_mode}'. Expected 'auto', 'diffusers', or 'hf_api'.",
+                "Invalid generation mode. Set GENERATION_MODE=cloudflare in .env.",
                 error_type="ConfigurationError"
             )
 
-        if generated_pil_image is None or not isinstance(generated_pil_image, Image.Image):
+        start_time = time.time()
+
+        logger.info(
+            f"Starting Cloudflare image generation for prompt: "
+            f"{validated_prompt}"
+        )
+
+        generated_image, execution_backend = (
+            self._generate_with_cloudflare(validated_prompt)
+        )
+
+        if not isinstance(generated_image, Image.Image):
             raise ModelServiceError(
-                "Model execution completed but did not yield a valid PIL Image.",
+                "Cloudflare did not return a valid image.",
                 error_type="GenerationOutputError"
             )
 
-        # Process and save the generated image
-        generation_duration = round(time.time() - start_time, 2)
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        generation_duration = round(
+            time.time() - start_time, 2
+        )
+
+        timestamp_str = datetime.now().strftime(
+            "%Y%m%d_%H%M%S"
+        )
+
         unique_token = uuid.uuid4().hex[:8]
-        filename = f"gen_{timestamp_str}_{unique_token}.png"
-        filepath = Config.OUTPUT_DIR / filename
+
+        filename = (
+            f"gen_{timestamp_str}_{unique_token}.png"
+        )
+
+        output_directory = Path(Config.OUTPUT_DIR)
+        output_directory.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        filepath = output_directory / filename
 
         try:
-            # Save real generated image with Pillow
-            generated_pil_image.save(filepath, format="PNG", optimize=True)
-            logger.info(f"Successfully generated and saved real image to {filepath} in {generation_duration}s")
-        except Exception as save_err:
-            logger.exception("Failed to save generated image to disk.")
+            generated_image.save(
+                filepath,
+                format="PNG",
+                optimize=True
+            )
+
+            logger.info(
+                f"Generated image saved successfully: {filepath}"
+            )
+
+        except Exception as save_error:
+            logger.exception("Image saving failed.")
+
             raise ModelServiceError(
-                f"Failed to write generated image to storage: {sanitize_secrets(str(save_err))}",
+                f"Failed to save generated image: "
+                f"{sanitize_secrets(str(save_error))}",
                 error_type="DiskWriteError"
             )
 
-        # Relative URL for browser consumption
         image_url = f"/static/generated/{filename}"
 
         return {
@@ -255,120 +197,184 @@ class TextToImageModelService:
             "model": self.model_id,
             "execution_backend": execution_backend,
             "generation_time_seconds": generation_duration,
-            "dimensions": f"{generated_pil_image.width}x{generated_pil_image.height}",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "dimensions": (
+                f"{generated_image.width}x"
+                f"{generated_image.height}"
+            ),
+            "timestamp": datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
         }
 
-    def _generate_with_local_diffusers(self, prompt: str) -> (Image.Image, str):
-        """Generates image using local PyTorch Diffusers pipeline."""
-        if not self.is_pipeline_loaded or self.local_pipeline is None:
-            self._load_local_pipeline()
-
-        try:
-            logger.info(f"Running PyTorch Diffusers inference on {self.device}...")
-            
-            # Execute real model inference step
-            result = self.local_pipeline(
-                prompt=prompt,
-                num_inference_steps=Config.NUM_INFERENCE_STEPS,
-                guidance_scale=Config.GUIDANCE_SCALE,
-                width=Config.IMAGE_WIDTH,
-                height=Config.IMAGE_HEIGHT
-            )
-
-            if not hasattr(result, "images") or len(result.images) == 0:
-                raise ModelServiceError("Diffusers pipeline returned empty image list.", error_type="ModelOutputError")
-
-            image = result.images[0]
-            backend_info = f"PyTorch Diffusers Local [{self.device}]"
-            return image, backend_info
-
-        except Exception as exc:
-            sanitized = sanitize_secrets(str(exc))
-            logger.exception("Exception during local PyTorch diffusers generation.")
-            raise ModelServiceError(
-                f"PyTorch Diffusers inference failed: {sanitized}",
-                error_type=exc.__class__.__name__,
-                details="Check memory constraints (VRAM/RAM) or reduce NUM_INFERENCE_STEPS / image dimensions."
-            )
-
-    def _generate_with_hf_api(self, prompt: str) -> (Image.Image, str):
+    def _generate_with_cloudflare(self, prompt: str):
         """
-        Generates image using Hugging Face Inference API / Serverless Endpoint.
-        Sends prompt to the real cloud-hosted diffusion model and converts returned bytes to PIL Image.
+        Send the prompt to Cloudflare Workers AI
+        and convert the Base64 response into a PIL image.
         """
-        api_token = Config.HF_TOKEN
-        if not api_token:
+
+        if not self.cloudflare_account_id:
             raise ModelServiceError(
-                "Hugging Face API token (HF_TOKEN) is not set in .env. "
-                "To use the Hugging Face Inference API, provide a free user token from huggingface.co/settings/tokens, "
-                "or install PyTorch and Diffusers to run the model locally.",
-                error_type="MissingAuthenticationError",
-                details="Set HF_TOKEN=your_token in .env or configure GENERATION_MODE=diffusers with PyTorch."
+                "Cloudflare Account ID is missing from .env.",
+                error_type="MissingConfigurationError"
             )
 
-        logger.info(f"Calling Hugging Face Inference API for model '{self.model_id}'...")
-
-       
-        # Use the modern Hugging Face Inference Providers client
-        if not HF_HUB_AVAILABLE:
+        if not self.cloudflare_api_token:
             raise ModelServiceError(
-                "huggingface_hub is not installed correctly.",
-                error_type="MissingDependencyError"
+                "Cloudflare API token is missing from .env.",
+                error_type="MissingAuthenticationError"
             )
+
+        url = (
+            "https://api.cloudflare.com/client/v4/accounts/"
+            f"{self.cloudflare_account_id}/ai/run/"
+            f"{self.model_id}"
+        )
+
+        headers = {
+            "Authorization": (
+                f"Bearer {self.cloudflare_api_token}"
+            ),
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "prompt": prompt,
+            "steps": 4
+        }
 
         try:
             logger.info(
-                f"Calling Hugging Face Inference Providers "
-                f"for model '{self.model_id}'..."
+                f"Calling Cloudflare Workers AI model: {self.model_id}"
             )
 
-            client = InferenceClient(
-                provider="auto",
-                token=api_token
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=(15, 180)
             )
 
-            image = client.text_to_image(
-                prompt=prompt,
-                model=self.model_id,
-                guidance_scale=Config.GUIDANCE_SCALE,
-                num_inference_steps=Config.NUM_INFERENCE_STEPS
+            if not response.ok:
+
+                try:
+                    error_data = response.json()
+                    error_message = error_data.get(
+                        "errors", error_data
+                    )
+                except ValueError:
+                    error_message = response.text[:1000]
+
+                raise ModelServiceError(
+                    f"Cloudflare API returned HTTP "
+                    f"{response.status_code}: "
+                    f"{sanitize_secrets(str(error_message))}",
+                    error_type="CloudflareAPIError",
+                    details=(
+                        f"HTTP status: {response.status_code}"
+                    )
+                )
+
+            try:
+                response_data = response.json()
+
+            except ValueError:
+                raise ModelServiceError(
+                    "Cloudflare returned an invalid JSON response.",
+                    error_type="InvalidAPIResponseError"
+                )
+
+            result = response_data.get(
+                "result", response_data
             )
 
-            if isinstance(image, Image.Image):
-                return image, f"Hugging Face Cloud API [{self.model_id}]"
+            if not isinstance(result, dict):
+                raise ModelServiceError(
+                    "Unexpected Cloudflare response structure.",
+                    error_type="InvalidAPIResponseError"
+                )
 
-            raise ModelServiceError(
-                "Hugging Face returned an unexpected image response.",
-                error_type="ImageDecodeError"
+            image_base64 = result.get("image")
+
+            if not image_base64:
+                raise ModelServiceError(
+                    "Cloudflare response did not contain image data.",
+                    error_type="MissingImageDataError"
+                )
+
+            try:
+                image_bytes = base64.b64decode(
+                    image_base64,
+                    validate=True
+                )
+
+                image_buffer = io.BytesIO(image_bytes)
+
+                with Image.open(image_buffer) as opened_image:
+                    opened_image.load()
+                    generated_image = opened_image.convert("RGB")
+
+            except Exception as image_error:
+                raise ModelServiceError(
+                    f"Could not decode generated image: "
+                    f"{sanitize_secrets(str(image_error))}",
+                    error_type="ImageDecodeError"
+                )
+
+            logger.info(
+                "Cloudflare successfully generated an image."
             )
+
+            backend = (
+                f"Cloudflare Workers AI [{self.model_id}]"
+            )
+
+            return generated_image, backend
 
         except ModelServiceError:
             raise
 
-        except Exception as hf_err:
-            sanitized_error = sanitize_secrets(str(hf_err))
+        except requests.Timeout:
+            logger.exception("Cloudflare request timed out.")
 
+            raise ModelServiceError(
+                "Cloudflare image generation request timed out.",
+                error_type="CloudflareTimeoutError"
+            )
+
+        except requests.RequestException as request_error:
+            logger.exception("Cloudflare connection failed.")
+
+            raise ModelServiceError(
+                f"Cloudflare connection failed: "
+                f"{sanitize_secrets(str(request_error))}",
+                error_type="CloudflareConnectionError"
+            )
+
+        except Exception as error:
             logger.exception(
-                "Hugging Face Inference Providers request failed."
+                "Unexpected Cloudflare generation error."
             )
 
             raise ModelServiceError(
-                f"Hugging Face image generation failed: {sanitized_error}",
-                error_type="HuggingFaceAPIError",
-                details=sanitized_error
+                f"Unexpected image generation error: "
+                f"{sanitize_secrets(str(error))}",
+                error_type="CloudflareGenerationError"
             )
 
-
     def get_status_info(self) -> Dict[str, Any]:
-        """Returns the current operational status of the service."""
+        """Return the current service configuration."""
+
         return {
             "configured_mode": self.mode,
             "model_id": self.model_id,
             "device": self.device,
-            "torch_available": TORCH_AVAILABLE,
-            "diffusers_available": DIFFUSERS_AVAILABLE,
-            "is_local_pipeline_loaded": self.is_pipeline_loaded,
-            "has_hf_token": bool(Config.HF_TOKEN),
-            "pipeline_load_error": self.pipeline_load_error
+            "torch_available": False,
+            "diffusers_available": False,
+            "is_local_pipeline_loaded": False,
+            "has_hf_token": False,
+            "has_cloudflare_token": bool(
+                self.cloudflare_api_token
+            ),
+            "cloudflare_model_id": self.model_id,
+            "pipeline_load_error": None
         }

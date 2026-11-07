@@ -1,61 +1,39 @@
-version: '3.8'
-
-# ==============================================================================
-# Docker Compose for AI Text-to-Image Generator
-# Single Source of Truth: brain.md
-# ==============================================================================
 
 services:
   ai-generator:
     build:
       context: .
       dockerfile: Dockerfile
+
     container_name: ai_text_to_image_app
     restart: unless-stopped
+
     ports:
       - "5000:5000"
+
     env_file:
       - .env
+
     environment:
       PYTHONUNBUFFERED: "1"
       FLASK_PORT: "5000"
       FLASK_ENV: "production"
-      GENERATION_MODE: "hf_api"
-      MODEL_ID: "stabilityai/stable-diffusion-3-medium-diffusers"
-      NUM_INFERENCE_STEPS: "10"
-      GUIDANCE_SCALE: "7.5"
-      IMAGE_WIDTH: "256"
-      IMAGE_HEIGHT: "256"
-
-
 
     volumes:
-      # 1. Persist real AI generated images onto the host filesystem
       - ./static/generated:/app/static/generated
-      # 2. Persist Hugging Face model weights across container restarts
       - hf_cache:/root/.cache/huggingface
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
+
     networks:
       - t2i-network
 
-    # --------------------------------------------------------------------------
-    # Optional NVIDIA GPU Acceleration (Uncomment if NVIDIA Container Toolkit is installed):
-    # --------------------------------------------------------------------------
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-
 volumes:
-  # Persistent volume for Hugging Face neural network weights
   hf_cache:
     driver: local
 

@@ -45,7 +45,7 @@ EXPOSE 5000
 
 # Docker Healthcheck: queries /health endpoint every 30 seconds
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:5000/health || exit 1
+   CMD curl -f "http://localhost:${PORT:-5000}/health" || exit 1
 
 # Default execution command: Launch Flask server binding to 0.0.0.0
 CMD ["python", "app.py"]

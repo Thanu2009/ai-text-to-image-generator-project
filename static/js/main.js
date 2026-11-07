@@ -34,7 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
     'Finalizing your image preview...'
   ];
 
- 
+
 const demoImages = [
   {
     keywords: ['leopard', 'animal', 'tiger'],
@@ -131,78 +131,73 @@ function updateCharCount() {
     });
   }
 
-  async function handleGenerate() {
-    const rawPrompt = promptInput.value.trim();
 
-    hideError();
-    hideResult();
+async function handleGenerate() {
+  const rawPrompt = promptInput.value.trim();
 
-    if (!rawPrompt) {
-      showError(
-        'EmptyPromptError',
-        'Prompt cannot be empty.',
-        'Please enter an image description.'
-      );
-      promptInput.focus();
-      return;
-    }
+  hideError();
+  hideResult();
 
-    if (rawPrompt.length > 500) {
-      showError(
-        'PromptLengthExceededError',
-        'Prompt exceeds 500 characters.',
-        'Please shorten your prompt.'
-      );
-      return;
-    }
-
-    setLoadingState(true);
-
-    try {
-console.log("Prompt received:", rawPrompt);
-
-const selectedDemo = findDemoImage(rawPrompt);
-function findDemoImage(prompt) {
-  const text = prompt.toLowerCase().trim();
-
-  if (text.includes('anime')) {
-    return demoImages.find(item =>
-      item.keywords.includes('anime')
+  if (!rawPrompt) {
+    showError(
+      'EmptyPromptError',
+      'Prompt cannot be empty.',
+      'Please enter an image description.'
     );
+    promptInput.focus();
+    return;
   }
 
-  const matchedImage = demoImages.find(item =>
-    item.keywords.some(keyword =>
-      text.includes(keyword.toLowerCase())
-    )
-  );
+  if (rawPrompt.length > 500) {
+    showError(
+      'PromptLengthExceededError',
+      'Prompt exceeds 500 characters.',
+      'Please shorten your prompt.'
+    );
+    return;
+  }
 
-  return matchedImage || demoImages[1];
+  setLoadingState(true);
+
+  try {
+    console.log("Sending prompt to AI:", rawPrompt);
+
+    const response = await fetch('/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        prompt: rawPrompt
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.status !== 'success') {
+      throw new Error(
+        data.message || 'Image generation failed.'
+      );
+    }
+
+    console.log("AI generation successful:", data);
+
+    showResult(data);
+
+  } catch (error) {
+    console.error("AI generation error:", error);
+
+    showError(
+      'ImageGenerationError',
+      error.message || 'Unable to generate image.',
+      'Check your Hugging Face API configuration and server logs.'
+    );
+
+  } finally {
+    setLoadingState(false);
+  }
 }
 
-console.log("Selected demo image:", selectedDemo);
-      await new Promise(resolve => setTimeout(resolve, 600));
-
-      showResult({
-        image_url: selectedDemo.image,
-        filename: 'demo-preview.jpg',
-        prompt: rawPrompt,
-        model: 'Demo Image Library',
-        dimensions: '800px wide',
-        generation_time_seconds: 'N/A',
-        execution_backend: 'Demo Preview - Sample Image'
-      });
-    } catch (error) {
-      console.error('Demo preview failed:', error);
-      showError(
-        'DemoPreviewError',
-        'Could not load the demo preview.',
-        'Please check your internet connection and try again.'
-      );
-    } finally {
-      setLoadingState(false);
-    }
-  }
 
   function showResult(data) {
     generatedImage.src = data.image_url;

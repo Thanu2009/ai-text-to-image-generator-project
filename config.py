@@ -1,3 +1,4 @@
+
 """
 Configuration Module for AI Text-to-Image Generator.
 Loads environment variables and sets system-wide defaults.
@@ -8,62 +9,70 @@ import re
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Base directory of the project
+# Project base directory
 BASE_DIR = Path(__file__).resolve().parent
 
-# Load .env file if it exists
+# Load environment variables from .env
 load_dotenv(BASE_DIR / ".env")
+
 
 class Config:
     """Application configuration parameters."""
-    SECRET_KEY = os.getenv("SECRET_KEY", "bca_t2i_secret_key_default_98234")
-    PORT = int(os.getenv("FLASK_PORT", 5000))
-    DEBUG = os.getenv("FLASK_DEBUG", "False").lower() in ("true", "1", "t")
 
-    # Backend generation mode: 'auto', 'diffusers', or 'hf_api'
-    GENERATION_MODE = os.getenv("GENERATION_MODE", "auto").lower()
+    SECRET_KEY = os.getenv("SECRET_KEY", "change-this-development-key")
 
-    # Hugging Face API Token (optional for local diffusers, required for HF Inference API)
-    HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
+    # Generation settings
+    GENERATION_MODE = os.getenv("GENERATION_MODE", "cloudflare").strip().lower()
 
-    # Model ID to load or query
-    MODEL_ID = os.getenv("MODEL_ID", "stabilityai/stable-diffusion-xl-base-1.0").strip()
+    # Cloudflare Workers AI settings
+    CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
+    CLOUDFLARE_MODEL_ID = os.getenv(
+        "CLOUDFLARE_MODEL_ID",
+        "@cf/black-forest-labs/flux-1-schnell"
+    ).strip()
 
-    # Image generation parameters
-    NUM_INFERENCE_STEPS = int(os.getenv("NUM_INFERENCE_STEPS", 30))
-    GUIDANCE_SCALE = float(os.getenv("GUIDANCE_SCALE", 7.5))
-    IMAGE_WIDTH = int(os.getenv("IMAGE_WIDTH", 512))
-    IMAGE_HEIGHT = int(os.getenv("IMAGE_HEIGHT", 512))
+    MODEL_ID = CLOUDFLARE_MODEL_ID
 
-    # Limits and paths
-    MAX_PROMPT_LENGTH = 500
+    # Image settings
+    MAX_PROMPT_LENGTH = int(os.getenv("MAX_PROMPT_LENGTH", "2048"))
     OUTPUT_DIR = BASE_DIR / "static" / "generated"
-
-    # Ensure output directory exists
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Server settings
+    PORT = int(os.getenv("PORT", os.getenv("FLASK_PORT", "5000")))
+    DEBUG = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
-def sanitize_secrets(text: str) -> str:
-    """
-    Remove sensitive credentials such as Hugging Face tokens or API keys
-    from error messages and logs before returning to frontend or logging.
-    """
-    if not text:
-        return ""
-    
-    sanitized = str(text)
-    
-    # Redact explicit HF_TOKEN if configured
-    if Config.HF_TOKEN:
-        sanitized = sanitized.replace(Config.HF_TOKEN, "[REDACTED_HF_TOKEN]")
-    
-    # Redact Hugging Face token patterns like hf_xxxxxxxxxxxxxxxxxxxxxxxx
-    sanitized = re.sub(r"hf_[a-zA-Z0-9]{20,}", "[REDACTED_HF_TOKEN]", sanitized)
 
-    # Redact Bearer tokens in headers
-    sanitized = re.sub(r"Bearer\s+[a-zA-Z0-9_\-\.]+", "Bearer [REDACTED_TOKEN]", sanitized, flags=re.IGNORECASE)
+def sanitize_secrets(value):
+    """Redact credentials from error messages and logs."""
 
-    # Redact typical API key URL queries
-    sanitized = re.sub(r"([?&]key=)[^&\s]+", r"\1[REDACTED_KEY]", sanitized)
+    if value is None:
+        return value
 
-    return sanitized
+    text = str(value)
+
+    secrets = [
+        Config.CLOUDFLARE_API_TOKEN,
+        Config.CLOUDFLARE_ACCOUNT_ID,
+        os.getenv("HF_TOKEN", ""),
+        os.getenv("HUGGINGFACEHUB_API_TOKEN", ""),
+    ]
+
+    for secret in secrets:
+        if secret and len(secret) >= 4:
+            text = text.replace(secret, "[REDACTED]")
+
+    text = re.sub(
+        r"(?i)(authorization\s*:\s*bearer\s+)[^\s,'\"]+",
+        r"\1[REDACTED]",
+        text
+    )
+
+    text = re.sub(
+        r"(?i)(api[_-]?key|token|secret)(\s*[=:]\s*)[^\s,'\"]+",
+        r"\1\2[REDACTED]",
+        text
+    )
+
+    return text

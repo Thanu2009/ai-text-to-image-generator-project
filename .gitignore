@@ -1,8 +1,24 @@
+# Environment variables and secrets
 .env
-*.tar
-*.zip
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.pyc
 .venv/
 venv/
-.git/
+
+# Generated images
+static/generated/*
+!static/generated/.gitkeep
+
+# Archives
+*.tar
+*.zip
+
+# Operating system files
+.DS_Store
+
+# Separate nested GitHub repository
+/ai-text-to-image-generator/
